@@ -1,5 +1,5 @@
 /*
-   eventfs: a self-cleaning filesystem for runtime state.
+   eventfs: a self-cleaning filesystem for event queues.
    Copyright (C) 2015  Jude Nelson
 
    This program is dual-licensed: you can redistribute it and/or modify
