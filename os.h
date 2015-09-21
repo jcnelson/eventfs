@@ -50,6 +50,7 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <getopt.h>
 
 #include <sys/types.h>
 #include <sys/time.h>
