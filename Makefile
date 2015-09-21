@@ -4,7 +4,7 @@ LIB   := -lfuse -lpthread -lrt -lfskit -lfskit_fuse -lpstat
 INC   := -I. 
 C_SRCS:= $(wildcard *.c)
 OBJ   := $(patsubst %.c,%.o,$(C_SRCS))
-DEFS  := -D_REENTRANT -D_THREAD_SAFE -D__STDC_FORMAT_MACROS -D_FILE_OFFSET_BITS=64
+DEFS  := -D_REENTRANT -D_THREAD_SAFE -D__STDC_FORMAT_MACROS -D_FILE_OFFSET_BITS=64 -D_XOPEN_SOURCE=700
 
 EVENTFS := eventfs
 
