@@ -124,10 +124,7 @@ int eventfs_deferred_remove( struct eventfs_state* eventfs, char const* child_pa
        eventfs_safe_free( ctx );
        eventfs_safe_free( work );
        
-       char name[FSKIT_FILESYSTEM_NAMEMAX+1];
-       fskit_entry_copy_name( child, name, FSKIT_FILESYSTEM_NAMEMAX );
-       
-       eventfs_error("fskit_entry_garbage_collect('%s') rc = %d\n", name, rc );
+       eventfs_error("fskit_entry_garbage_collect('%s') rc = %d\n", child_path, rc );
        return rc;
    }
    
@@ -135,8 +132,87 @@ int eventfs_deferred_remove( struct eventfs_state* eventfs, char const* child_pa
    
    // deferred removal 
    eventfs_wreq_init( work, eventfs_deferred_remove_cb, ctx );
-   eventfs_wq_add( eventfs->deferred_unlink_wq, work );
+   eventfs_wq_add( eventfs->deferred_wq, work );
    
    return 0;
 }
 
+
+// callback to sweep the filesystem to remove dead directory inodes.
+// basically, just run `ls` on the mountpoint.  The readdir() callback will queue
+// dead directories for garbage-collection.
+// return 0 on success
+static int eventfs_deferred_reap_cb( struct eventfs_wreq* wreq, void* cls ) {
+    
+    int rc = 0;
+    int status = 0;
+    char* const mountpoint = (char* const)cls;
+    
+    char* const argv[] = {
+        "/bin/ls", 
+        (char*)mountpoint,
+        NULL
+    };
+    
+    char* const envp[] = {
+        NULL
+    };
+    
+    // send child's output to NULL
+    int devnull = open("/dev/null", O_WRONLY );
+    if( devnull < 0 ) {
+        
+        rc = -errno;
+        eventfs_error("Failed to open /dev/null: %s\n", strerror(-rc));
+        return rc;
+    }
+    
+    pid_t child = fork();
+    if( child < 0 ) {
+        
+        rc = -errno;
+        close( devnull );
+        eventfs_error("fork: %s\n", strerror( rc ) );
+        return 0;
+    }
+    else if( child == 0 ) {
+        
+        // child!
+        // async-safe only now...
+        
+        // send stdout and stderr to /dev/null 
+        dup2( devnull, STDOUT_FILENO );
+        dup2( devnull, STDERR_FILENO );
+        
+        execve( "/bin/ls", argv, envp );
+        
+        // if we get here, we error'ed
+        _exit(1);
+    }
+    else {
+        
+        close( devnull );
+        
+        // explicitly set SIGCHLD to SIG_IDN, so the kernel should reap it
+        return 0;
+    }
+}
+
+// sweep the filesystem periodically to remove dead directory inodes.
+// run in a separate process to prevent FUSE deadlocks
+// return 0 on success
+int eventfs_deferred_reap( struct eventfs_state* eventfs ) {
+    
+    int rc = 0;
+    struct eventfs_wreq* work = NULL;
+    
+    work = EVENTFS_CALLOC( struct eventfs_wreq, 1 );
+    if( work == NULL ) {
+        return -ENOMEM;
+    }
+    
+    // deferred removal 
+   eventfs_wreq_init( work, eventfs_deferred_reap_cb, eventfs->mountpoint );
+   eventfs_wq_add( eventfs->deferred_wq, work );
+   return 0;
+}

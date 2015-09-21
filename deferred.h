@@ -29,5 +29,6 @@
 struct eventfs_state;
 
 int eventfs_deferred_remove( struct eventfs_state* eventfs, char const* child_path, struct fskit_entry* child );
+int eventfs_deferred_reap( struct eventfs_state* eventfs );
 
 #endif
