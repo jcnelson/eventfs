@@ -39,16 +39,19 @@
 
 #define EVENTFS_VERIFY_DEFAULT    (EVENTFS_VERIFY_INODE | EVENTFS_VERIFY_MTIME | EVENTFS_VERIFY_SIZE | EVENTFS_VERIFY_STARTTIME)
 
-// information for a file inode (as a deque entry)
+// information for a file inode
 struct eventfs_file_inode {
-   char* name;                                          // name of the file
    char* contents;                                      // contents of the file
    off_t size;                                          // size of the file
    size_t contents_len;                                 // size of the contents buffer
+};
+
+// deque over the set of files in a directory
+struct eventfs_file_deque {
    
-   // deque pointers 
-   struct eventfs_file_inode* prev;
-   struct eventfs_file_inode* next;
+   char* name;
+   struct eventfs_file_deque* prev;
+   struct eventfs_file_deque* next;
 };
 
 // information for a directory inode 
@@ -57,26 +60,28 @@ struct eventfs_dir_inode {
    bool deleted;                                        // if true, then consider the associated fskit entry deleted
    int verify_discipline;                               // bit flags of EVENTFS_VERIFY_* that control how strict we are in verifying the accessing process
    
-   struct eventfs_file_inode* head;                     // head inode: symlink to the oldest file inode 
-   struct eventfs_file_inode* tail;                     // tail inode: symlink to the newest file inode
+   struct eventfs_file_deque* head;                     // oldest file in this directory
+   struct eventfs_file_deque* tail;                     // newest file in this directory
    
-   // head and tail inodes (for fast lookup)
+   // head and tail symlinks
    struct fskit_entry* fent_head;
    struct fskit_entry* fent_tail;
 };
 
 
-int eventfs_file_inode_init( struct eventfs_file_inode* inode, char const* name );
+int eventfs_file_inode_init( struct eventfs_file_inode* inode );
 int eventfs_file_inode_free( struct eventfs_file_inode* inode );
 
 int eventfs_dir_inode_init( struct eventfs_dir_inode* inode, pid_t pid, int verify_discipline );
 int eventfs_dir_inode_free( struct fskit_core* core, struct eventfs_dir_inode* inode );
 
 // deque operations we expose
-int eventfs_dir_inode_append( struct fskit_core* core, struct eventfs_dir_inode* dir, struct fskit_entry* dent, struct eventfs_file_inode* file );
-int eventfs_dir_inode_remove( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent, struct eventfs_file_inode* file );
-int eventfs_dir_inode_pophead( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent, struct eventfs_file_inode** file );
-int eventfs_dir_inode_poptail( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent, struct eventfs_file_inode** file );
+int eventfs_dir_inode_append( struct fskit_core* core, struct eventfs_dir_inode* dir, struct fskit_entry* dent, char const* name );
+int eventfs_dir_inode_remove( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent, char const* name );
+int eventfs_dir_inode_pophead( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent );
+int eventfs_dir_inode_poptail( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent );
+int eventfs_dir_inode_is_empty( struct eventfs_dir_inode* dir );
+// int eventfs_dir_inode_rename_child( struct fskit_core* core, struct eventfs_dir_inode* dir, struct fskit_entry* fent, char const* old_name, char const* new_name );
 
 // keep symlinks consistent 
 int eventfs_dir_inode_retarget_head( struct eventfs_dir_inode* dir, char* target );

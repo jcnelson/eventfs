@@ -175,22 +175,27 @@ int eventfs_dir_inode_free( struct fskit_core* core, struct eventfs_dir_inode* i
       inode->ps = NULL;
    }
    
+   if( inode->head != NULL ) {
+       
+       for( struct eventfs_file_deque* itr = inode->head; itr != NULL;  ) {
+           
+           struct eventfs_file_deque* old_itr = itr;
+           itr = itr->next;
+           
+           eventfs_safe_free( old_itr->name );
+           eventfs_safe_free( old_itr );
+       }
+   }
+   
    memset( inode, 0, sizeof(struct eventfs_dir_inode) );
    return 0;
 }
 
 
 // set up a file inode 
-int eventfs_file_inode_init( struct eventfs_file_inode* inode, char const* name ) {
+int eventfs_file_inode_init( struct eventfs_file_inode* inode ) {
     
    memset( inode, 0, sizeof(struct eventfs_file_inode) );
-   
-   char* name_dup = strdup( name );
-   if( name_dup == NULL ) {
-       return -ENOMEM;
-   }
-   
-   inode->name = name_dup;
    return 0;
 }
 
@@ -200,10 +205,6 @@ int eventfs_file_inode_free( struct eventfs_file_inode* inode ) {
     
    if( inode->contents != NULL ) {
        eventfs_safe_free( inode->contents );
-   }
-   
-   if( inode->name != NULL ) {
-       eventfs_safe_free( inode->name );
    }
    
    memset( inode, 0, sizeof(struct eventfs_file_inode) );
@@ -223,34 +224,15 @@ static int eventfs_dir_head_symlink_restore( struct fskit_core* core, struct eve
     // point symlink to new head
     int rc = 0;
     
-    // regenerate the symlink 
-    struct fskit_entry* new_head = fskit_entry_new();
-    if( new_head == NULL ) {
-        return -ENOMEM;
-    }
-    
-    uint64_t inode_number = fskit_core_inode_alloc( core, dent, new_head );
-    
-    rc = fskit_entry_init_symlink( new_head, inode_number, "head", name_dup );
-    if( rc != 0 ) {
+    if( dir->fent_head != NULL ) {
         
-        fskit_core_inode_free( core, inode_number );
-        eventfs_safe_free( new_head );
-        return -ENOMEM;
-    }
-    
-    // add it to the parent 
-    rc = fskit_entry_attach_lowlevel( dent, new_head );
-    if( rc != 0 ) {
+        char* old_symlink = fskit_entry_swap_symlink_target( dir->fent_head, name_dup );
+        eventfs_safe_free( old_symlink );
         
-        fskit_core_inode_free( core, inode_number );
-        eventfs_safe_free( new_head );
-        
-        eventfs_error("BUG: attach '%s' to %p rc = %d\n", "head", dir, rc );
-        return rc;
+        fskit_entry_wlock( dir->fent_head );
+        fskit_entry_attach_lowlevel( dent, dir->fent_head, "head" );
+        fskit_entry_unlock( dir->fent_head );
     }
-    
-    dir->fent_head = new_head;
     
     return rc;
 }
@@ -267,34 +249,15 @@ static int eventfs_dir_tail_symlink_restore( struct fskit_core* core, struct eve
     // point symlink to new tail 
     int rc = 0;
     
-    // regenerate the symlink 
-    struct fskit_entry* new_tail = fskit_entry_new();
-    if( new_tail == NULL ) {
-        return -ENOMEM;
-    }
-    
-    uint64_t inode_number = fskit_core_inode_alloc( core, dent, new_tail );
-    
-    rc = fskit_entry_init_symlink( new_tail, inode_number, "tail", name_dup );
-    if( rc != 0 ) {
+    if( dir->fent_tail != NULL ) {
         
-        fskit_core_inode_free( core, inode_number );
-        eventfs_safe_free( new_tail );
-        return -ENOMEM;
-    }
-    
-    // add it to the parent 
-    rc = fskit_entry_attach_lowlevel( dent, new_tail );
-    if( rc != 0 ) {
+        char* old_symlink = fskit_entry_swap_symlink_target( dir->fent_tail, name_dup );
+        eventfs_safe_free( old_symlink );
         
-        fskit_core_inode_free( core, inode_number );
-        eventfs_safe_free( new_tail );
-        
-        eventfs_error("BUG: attach '%s' to %p rc = %d\n", "tail", dir, rc );
-        return rc;
+        fskit_entry_wlock( dir->fent_tail );
+        fskit_entry_attach_lowlevel( dent, dir->fent_tail, "tail" );
+        fskit_entry_unlock( dir->fent_tail );
     }
-    
-    dir->fent_tail = new_tail;
     
     return rc;
 }
@@ -302,20 +265,15 @@ static int eventfs_dir_tail_symlink_restore( struct fskit_core* core, struct eve
 
 // make the directory empty:
 // * make the deque pointers NULL
-// * detach and unref the symlinks 
+// * detach the symlinks 
 // NOTE: path refers to the inode to be detached by fskit
 // return 0 on success 
 // return -ENOMEM on OOM
 // NOTE: dent must be write-locked, but its head and tail symlinks cannot be 
-static int eventfs_dir_inode_set_empty( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent, struct fskit_entry* detached_child ) {
+static int eventfs_dir_inode_set_empty( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent ) {
     
     struct eventfs_state* eventfs = (struct eventfs_state*)fskit_core_get_user_data( core );
     int rc = 0;
-    
-    if( dir->head == NULL && dir->tail == NULL ) {
-        // already empty
-        return 0;
-    }
     
     eventfs_debug("set %p empty\n", dir );
     
@@ -324,9 +282,9 @@ static int eventfs_dir_inode_set_empty( struct fskit_core* core, char const* dir
     
     char* detach_path = NULL;
     
-    if( detached_child != dir->fent_head ) {
+    if( dir->fent_head != NULL ) {
     
-        // destroying tail or a file; detach head ourselves
+        // detach head symlink
         fskit_entry_rlock( dir->fent_head );
         head_type = fskit_entry_get_type( dir->fent_head );
         fskit_entry_unlock( dir->fent_head );
@@ -347,16 +305,30 @@ static int eventfs_dir_inode_set_empty( struct fskit_core* core, char const* dir
             
             fskit_entry_wlock( dir->fent_head );
             
-            fskit_entry_detach_lowlevel( dent, dir->fent_head );
-            rc = fskit_entry_try_destroy_and_free( core, detach_path, dent, dir->fent_head );
+            rc = fskit_entry_detach_lowlevel( dent, "head" );
             
-            if( rc > 0 ) {
-                // destroyed 
-                rc = 0;
+            if( rc == 0 ) {
+                rc = fskit_entry_try_destroy_and_free( core, detach_path, dent, dir->fent_head );
+                
+                if( rc > 0 ) {
+                    // destroyed 
+                    rc = 0;
+                }
+                else {
+                    // not destroyed
+                    fskit_entry_unlock( dir->fent_head );
+                    if( rc != 0 ) {
+                        
+                        eventfs_error("fskit_entry_try_destroy_and_free('head') rc = %d\n", rc );
+                        rc = 0;
+                    }
+                }
             }
             else {
-                // not destroyed
+                
                 fskit_entry_unlock( dir->fent_head );
+                eventfs_error("fskit_entry_detach_lowlevel('head') rc = %d\n", rc );
+                rc = 0;
             }
             
             eventfs_safe_free( detach_path );
@@ -365,7 +337,7 @@ static int eventfs_dir_inode_set_empty( struct fskit_core* core, char const* dir
         }
     }
     
-    if( detached_child != dir->fent_tail ) {
+    if( dir->fent_tail != NULL ) {
         
         // destroying head or a file; detach tail ourselves
         fskit_entry_rlock( dir->fent_tail );
@@ -387,17 +359,31 @@ static int eventfs_dir_inode_set_empty( struct fskit_core* core, char const* dir
             }
             
             fskit_entry_wlock( dir->fent_tail );
+            rc = fskit_entry_detach_lowlevel( dent, "tail" );
             
-            fskit_entry_detach_lowlevel( dent, dir->fent_tail );
-            rc = fskit_entry_try_destroy_and_free( core, detach_path, dent, dir->fent_tail );
-            
-            if( rc > 0 ) {
-                // destroyed 
-                rc = 0;
+            if( rc == 0 ) {
+                    
+                rc = fskit_entry_try_destroy_and_free( core, detach_path, dent, dir->fent_tail );
+                
+                if( rc > 0 ) {
+                    // destroyed 
+                    rc = 0;
+                }
+                else {
+                    // not destroyed
+                    fskit_entry_unlock( dir->fent_tail );
+                    if( rc != 0 ) {
+                        
+                        eventfs_error("fskit_entry_try_destroy_and_free('tail') rc = %d\n", rc );
+                        rc = 0;
+                    }
+                }
             }
             else {
-                // not destroyed
+                
                 fskit_entry_unlock( dir->fent_tail );
+                eventfs_error("fskit_entry_detach_lowlevel('tail') rc = %d\n", rc );
+                rc = 0;
             }
             
             eventfs_safe_free( detach_path );
@@ -406,8 +392,11 @@ static int eventfs_dir_inode_set_empty( struct fskit_core* core, char const* dir
         }
     }
     
-    dir->head = NULL;
-    dir->tail = NULL;
+    if( dir->head != NULL ) {
+        eventfs_safe_free( dir->head->name );
+        eventfs_safe_free( dir->head );
+        dir->head = NULL;
+    }
     
     return 0;
 }
@@ -419,24 +408,34 @@ static int eventfs_dir_inode_set_empty( struct fskit_core* core, char const* dir
 // return -ENOENT if the dir is deleted 
 // return -ENOMEM on OOM
 // NOTE: dent must be write-locked
-int eventfs_dir_inode_append( struct fskit_core* core, struct eventfs_dir_inode* dir, struct fskit_entry* dent, struct eventfs_file_inode* file ) {
+int eventfs_dir_inode_append( struct fskit_core* core, struct eventfs_dir_inode* dir, struct fskit_entry* dent, char const* name ) {
     
     int rc = 0;
     if( dir->deleted ) {
         return -ENOENT;
     }
     
-    char* name_dup_tail = strdup(file->name);
+    char* name_dup_tail = strdup(name);
     if( name_dup_tail == NULL ) {
+        return -ENOMEM;
+    }
+    
+    struct eventfs_file_deque* deque = EVENTFS_CALLOC( struct eventfs_file_deque, 1 );
+    char* deque_name = strdup( name );
+    
+    if( deque == NULL || deque_name == NULL ) {
+        eventfs_safe_free( deque );
+        eventfs_safe_free( deque_name );
         return -ENOMEM;
     }
     
     if( dir->head == NULL && dir->tail == NULL ) {
         
+        // directory is empty.
         // first entry--allocate and attach symlinks
         struct fskit_entry* fent_head = fskit_entry_new();
         struct fskit_entry* fent_tail = fskit_entry_new();
-        char* name_dup_head = strdup(file->name);
+        char* name_dup_head = strdup(name);
         
         if( fent_head == NULL || fent_tail == NULL || name_dup_head == NULL ) {
             
@@ -444,13 +443,15 @@ int eventfs_dir_inode_append( struct fskit_core* core, struct eventfs_dir_inode*
             eventfs_safe_free( fent_tail );
             eventfs_safe_free( name_dup_head );
             eventfs_safe_free( name_dup_tail );
+            eventfs_safe_free( deque );
+            eventfs_safe_free( deque_name );
             return -ENOMEM;
         }
         
         uint64_t head_inode_number = fskit_core_inode_alloc( core, dent, fent_head );
         uint64_t tail_inode_number = fskit_core_inode_alloc( core, dent, fent_tail );
     
-        rc = fskit_entry_init_symlink( fent_head, head_inode_number, "head", name_dup_head );
+        rc = fskit_entry_init_symlink( fent_head, head_inode_number, name_dup_head );
         eventfs_safe_free( name_dup_head );
         
         if( rc != 0 ) {
@@ -460,10 +461,12 @@ int eventfs_dir_inode_append( struct fskit_core* core, struct eventfs_dir_inode*
             eventfs_safe_free( fent_head );
             eventfs_safe_free( fent_tail );
             eventfs_safe_free( name_dup_tail );
+            eventfs_safe_free( deque );
+            eventfs_safe_free( deque_name );
             return rc;
         }
         
-        rc = fskit_entry_init_symlink( fent_tail, tail_inode_number, "tail", name_dup_tail );
+        rc = fskit_entry_init_symlink( fent_tail, tail_inode_number, name_dup_tail );
         eventfs_safe_free( name_dup_tail );
         
         if( rc != 0 ) {
@@ -472,47 +475,54 @@ int eventfs_dir_inode_append( struct fskit_core* core, struct eventfs_dir_inode*
             fskit_core_inode_free( core, tail_inode_number );
             eventfs_safe_free( fent_head );
             eventfs_safe_free( fent_tail );
+            eventfs_safe_free( deque );
+            eventfs_safe_free( deque_name );
             return rc;
         }
         
-        rc = fskit_entry_attach_lowlevel( dent, fent_head );
+        rc = fskit_entry_attach_lowlevel( dent, fent_head, "head" );
         if( rc != 0 ) {
             
             fskit_entry_destroy( core, fent_head, false );
             fskit_entry_destroy( core, fent_tail, false );
             eventfs_safe_free( fent_head );
             eventfs_safe_free( fent_tail );
+            eventfs_safe_free( deque );
             return rc;
         }
         
-        rc = fskit_entry_attach_lowlevel( dent, fent_tail );
+        rc = fskit_entry_attach_lowlevel( dent, fent_tail, "tail" );
         if( rc != 0 ) {
             
             fskit_entry_destroy( core, fent_head, false );
             fskit_entry_destroy( core, fent_tail, false );
             eventfs_safe_free( fent_head );
             eventfs_safe_free( fent_tail );
+            eventfs_safe_free( deque );
+            eventfs_safe_free( deque_name );
             return rc;
         }
         
         dir->fent_head = fent_head;
         dir->fent_tail = fent_tail;
         
-        dir->head = file;
-        dir->tail = file;
+        deque->name = deque_name;
+        deque->prev = NULL;
+        deque->next = NULL;
         
-        file->prev = NULL;
-        file->next = NULL;
+        dir->head = deque;
+        dir->tail = deque;
         
         return rc;
     }
     else {
         
         // second or more
-        file->next = NULL;
-        file->prev = dir->tail;
+        deque->name = deque_name;
+        deque->next = NULL;
+        deque->prev = dir->tail;
         
-        dir->tail->next = file;
+        dir->tail->next = deque;
         dir->tail = dir->tail->next;
         
         // retarget tail symlink target
@@ -522,10 +532,10 @@ int eventfs_dir_inode_append( struct fskit_core* core, struct eventfs_dir_inode*
 }
 
 
-// remove a file inode from a directory that is neither the head or tail.
+// remove a file inode from a directory that is neither the head or tail symlink.
 // return 0 on success 
 // return -ENOMEM on OOM
-int eventfs_dir_inode_remove( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent, struct eventfs_file_inode* file ) {
+int eventfs_dir_inode_remove( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent, char const* name ) {
     
     int rc = 0;
     
@@ -534,18 +544,18 @@ int eventfs_dir_inode_remove( struct fskit_core* core, char const* dir_path, str
     }
     
     // is this the last file?
-    if( dir->head == dir->tail ) {
+    if( dir->head == dir->tail && dir->head != NULL ) {
         
         // destroy head and tail symlink
-        rc = eventfs_dir_inode_set_empty( core, dir_path, dir, dent, NULL );
+        rc = eventfs_dir_inode_set_empty( core, dir_path, dir, dent );
         
         return rc;
     }
     else {
         
-        for( struct eventfs_file_inode* ptr = dir->head; ptr != NULL; ptr = ptr->next ) {
+        for( struct eventfs_file_deque* ptr = dir->head; ptr != NULL; ptr = ptr->next ) {
             
-            if( ptr == file ) {
+            if( strcmp( ptr->name, name ) == 0 ) {
                 
                 if( ptr == dir->head ) {
                     
@@ -593,6 +603,10 @@ int eventfs_dir_inode_remove( struct fskit_core* core, char const* dir_path, str
                     ptr->next->prev = ptr->prev;
                 }
                 
+                // delete this 
+                eventfs_safe_free( ptr->name );
+                eventfs_safe_free( ptr );
+                
                 return rc;
             }
         }
@@ -602,14 +616,15 @@ int eventfs_dir_inode_remove( struct fskit_core* core, char const* dir_path, str
 }
 
 
-// remove the head inode, and advance the head pointer.
-// put the dead file inode's data into *file 
+// detach the file the head symlink points to, and reattach the head symlink
 // return 0 on success 
 // return -ENOENT if dir is deleted 
 // dent must be write-locked
-int eventfs_dir_inode_pophead( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent, struct eventfs_file_inode** file ) {
+int eventfs_dir_inode_pophead( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent ) {
     
     int rc = 0;
+    
+    struct eventfs_state* eventfs = (struct eventfs_state*)fskit_core_get_user_data( core );
     
     if( dir->deleted ) {
         return -ENOENT;
@@ -618,20 +633,14 @@ int eventfs_dir_inode_pophead( struct fskit_core* core, char const* dir_path, st
     else if( dir->head == NULL ) {
         
         // already empty 
-        *file = NULL;
         return 0;
     }
     
     // find target
     struct fskit_entry* fent = fskit_dir_find_by_name( dent, dir->head->name );
     if( fent == NULL ) {
+        eventfs_error("no such file or directory: '%s'\n", dir->head->name);
         return -ENOENT;
-    }
-
-    // target's path 
-    char* target_path = fskit_fullpath( dir_path, dir->head->name, NULL );
-    if( target_path == NULL ) {
-        return -ENOMEM;
     }
     
     // new head target, if there is another file in this directory
@@ -640,67 +649,70 @@ int eventfs_dir_inode_pophead( struct fskit_core* core, char const* dir_path, st
         new_dir_head_name = strdup( dir->head->next->name );
         if( new_dir_head_name == NULL ) {
             
-            eventfs_safe_free( target_path );
             return -ENOMEM;
         }
     }
+
+    // target's path 
+    char* target_path = fskit_fullpath( dir_path, dir->head->name, NULL );
+    if( target_path == NULL ) {
+        
+        eventfs_safe_free( new_dir_head_name );
+        return -ENOMEM;
+    }
     
+    // detach target
     fskit_entry_wlock( fent );
     
-    // extract head inode data 
-    *file = (struct eventfs_file_inode*)fskit_entry_get_user_data( fent );
-    fskit_entry_set_user_data( fent, NULL );
-    
-    // detach head-pointed file
-    fskit_entry_detach_lowlevel( dent, fent );
+    fskit_entry_detach_lowlevel( dent, dir->head->name );
     rc = fskit_entry_try_destroy_and_free( core, target_path, dent, fent );
+    
     if( rc > 0 ) {
         // destroyed 
         rc = 0;
     }
     else {
-        // not destroyed 
+        // not destroyed
         fskit_entry_unlock( fent );
     }
     
-    eventfs_safe_free( target_path );
-
-    if( dir->head == dir->tail ) {
-        
-        // destroy head and tail symlink, and destroy file
-        rc = eventfs_dir_inode_set_empty( core, dir_path, dir, dent, NULL );
-        
-        return rc;
+    if( rc != 0 ) {
+        eventfs_error("fskit_try_destroy_and_free('%s') rc = %d\n", target_path, rc );
     }
     
-    else {
+    eventfs_safe_free( target_path );
+    
+    if( new_dir_head_name != NULL ) {
         
-        // restore dir head pointer
+        // reattach dir head pointer, and have it point to the next item
         rc = eventfs_dir_head_symlink_restore( core, dir, dent, new_dir_head_name );
-        eventfs_safe_free( new_dir_head_name );
-        
         if( rc != 0 ) {
             
+            eventfs_safe_free( new_dir_head_name );
             return rc;
         }
         
-        // shrink deque
-        dir->head = dir->head->next;
-        dir->head->prev = NULL;
+        return rc;
+    }
+    else {
         
+        // this was the last file in this directory.
+        // detach the symlinks too 
+        eventfs_dir_inode_set_empty( core, dir_path, dir, dent );
         return rc;
     }
 }
 
 
-// remove the tail inode, and retract the tail pointer.
-// put the dead file inode's data into *file 
+// detach the file the tail symlink points to, and re-attach the tail symlink
 // return 0 on success 
 // return -ENOENT if dir is deleted 
 // dent must be write-locked
-int eventfs_dir_inode_poptail( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent, struct eventfs_file_inode** file ) {
+int eventfs_dir_inode_poptail( struct fskit_core* core, char const* dir_path, struct eventfs_dir_inode* dir, struct fskit_entry* dent ) {
     
     int rc = 0;
+    
+    struct eventfs_state* eventfs = (struct eventfs_state*)fskit_core_get_user_data( core );
     
     if( dir->deleted ) {
         return -ENOENT;
@@ -709,7 +721,6 @@ int eventfs_dir_inode_poptail( struct fskit_core* core, char const* dir_path, st
     if( dir->tail == NULL ) {
         
         // already empty 
-        *file = NULL;
         return 0;
     }
     
@@ -718,70 +729,126 @@ int eventfs_dir_inode_poptail( struct fskit_core* core, char const* dir_path, st
         return -ENOENT;
     }
     
-    // target's path 
-    char* target_path = fskit_fullpath( dir_path, dir->tail->name, NULL );
-    if( target_path == NULL ) {
-        return -ENOMEM;
-    }
-    
     // new target
     char* new_dir_tail_name = NULL;
     if( dir->tail->prev != NULL ) {
         
         new_dir_tail_name = strdup( dir->tail->prev->name );
         if( new_dir_tail_name == NULL ) {
-            eventfs_safe_free( target_path );
+            
+            eventfs_safe_free( new_dir_tail_name );
             return -ENOMEM;
         }
     }
     
+    // target's path 
+    char* target_path = fskit_fullpath( dir_path, dir->tail->name, NULL );
+    if( target_path == NULL ) {
+        
+        eventfs_safe_free( new_dir_tail_name );
+        return -ENOMEM;
+    }
+    
+    // detach target
     fskit_entry_wlock( fent );
     
-    // extract head inode data 
-    *file = (struct eventfs_file_inode*)fskit_entry_get_user_data( fent );
-    fskit_entry_set_user_data( fent, NULL );
-    
-    // detach tail-pointed file
-    fskit_entry_detach_lowlevel( dent, fent );
+    fskit_entry_detach_lowlevel( dent, dir->tail->name );
     rc = fskit_entry_try_destroy_and_free( core, target_path, dent, fent );
+    
     if( rc > 0 ) {
         // destroyed 
         rc = 0;
     }
     else {
-        // not destroyed 
+        // not destroyed
         fskit_entry_unlock( fent );
+    }
+    
+    if( rc != 0 ) {
+        eventfs_error("fskit_try_destroy_and_free('%s') rc = %d\n", target_path, rc );
     }
     
     eventfs_safe_free( target_path );
     
-    if( dir->head == dir->tail ) {
+    if( new_dir_tail_name != NULL ) {
         
-        // destroy head and tail symlink
-        rc = eventfs_dir_inode_set_empty( core, dir_path, dir, dent, NULL );
-        
-        return rc;
-    }
-    
-    else {
-        
-        // restore dir tail pointer 
+        // restore dir tail pointer
         rc = eventfs_dir_tail_symlink_restore( core, dir, dent, new_dir_tail_name );
-        eventfs_safe_free( new_dir_tail_name );
         
         if( rc != 0 ) {
             
+            eventfs_safe_free( new_dir_tail_name );
             return rc;
         }
         
-        // shrink deque 
-        dir->tail = dir->tail->prev;
-        dir->tail->next = NULL;
+        return rc;
+    }
+    else {
         
+        // this was the last file in this directory.
+        // detach the symlinks too 
+        eventfs_dir_inode_set_empty( core, dir_path, dir, dent );
         return rc;
     }
 }
 
+
+/*
+// rename an inode in the listing, optionally retargeting the head or tail symlinks.
+// return 0 on success
+// return -ENOENT if not found 
+int eventfs_dir_inode_rename_child( struct fskit_core* core, struct eventfs_dir_inode* dir, struct fskit_entry* fent, char const* old_name, char const* new_name ) {
+    
+    int rc = 0;
+    
+    if( dir->fent_head == fent ) {
+        
+        // make the head point to the new entry 
+        char* new_name_dup = strdup( new_name );
+        if( new_name_dup == NULL ) {
+            return -ENOMEM;
+        }
+        
+        eventfs_dir_inode_retarget_head( dir, new_name_dup );
+        return 0;
+    }
+    
+    else if( dir->fent_tail == fent ) {
+        
+        // make the tail point to the new entry 
+        char* new_name_dup = strdup( new_name );
+        if( new_name_dup == NULL ) {
+            return -ENOMEM;
+        }
+        
+        eventfs_dir_inode_retarget_tail( dir, new_name_dup );
+        return 0;
+    }
+    
+    else {
+        
+        // renamed a "middle" inode.
+        // rename it in our inode list 
+        for( struct eventfs_file_inode* f = dir->head; f != dir->tail; f = f->next ) {
+            
+            if( strcmp( f->name, old_name ) == 0 ) {
+                
+                char* new_name_dup = strdup( new_name );
+                if( new_name_dup == NULL ) {
+                    return -ENOMEM;
+                }
+                
+                free( f->name );
+                f->name = new_name_dup;
+                
+                return 0;
+            }
+        }
+    }
+    
+    return -ENOENT;
+}
+*/
 
 // retarget the 'head' symlink
 // return 0 on success
@@ -822,4 +889,11 @@ int eventfs_dir_inode_retarget_tail( struct eventfs_dir_inode* dir, char* target
     }
     
     return 0;
+}
+
+
+// is a directory empty?
+int eventfs_dir_inode_is_empty( struct eventfs_dir_inode* dir ) {
+    
+    return (dir->fent_head == NULL && dir->fent_tail == NULL);
 }
