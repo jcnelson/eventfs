@@ -25,16 +25,33 @@
 #include <fskit/fskit.h>
 #include <fskit/fuse/fskit_fuse.h>
 
+#include "config.h"
 #include "deferred.h"
 #include "inode.h"
 #include "os.h"
 #include "util.h"
 #include "wq.h"
+#include "quota.h"
 
 struct eventfs_state {
     
     struct fskit_core* core;
-    struct eventfs_wq* deferred_unlink_wq;
+    struct fskit_fuse_state* fuse_state;
+    struct eventfs_config config;
+    struct eventfs_wq* deferred_wq;
+    
+    pthread_rwlock_t quota_lock;
+    eventfs_quota* user_quotas;
+    eventfs_quota* group_quotas;
+    
+    eventfs_usage* user_usages;
+    eventfs_usage* group_usages;
+    
+    char* mountpoint;
 };
+
+int eventfs_quota_rlock( struct eventfs_state* eventfs );
+int eventfs_quota_wlock( struct eventfs_state* eventfs );
+int eventfs_quota_unlock( struct eventfs_state* eventfs );
 
 #endif
