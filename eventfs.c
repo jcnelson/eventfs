@@ -1000,6 +1000,10 @@ int eventfs_stat( struct fskit_core* core, struct fskit_route_metadata* route_me
    struct eventfs_state* eventfs = (struct eventfs_state*)fskit_core_get_user_data( core );
    struct eventfs_dir_inode* inode = NULL;
    char* name = fskit_route_metadata_get_name( route_metadata );
+
+   if( fent == NULL ) {
+      return -ENOENT;
+   }
    
    fskit_entry_wlock( fent );
    
