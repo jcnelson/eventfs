@@ -6,8 +6,9 @@ Eventfs is a specialized userspace filesystem where each directory serves as pro
 * Every non-empty directory has a `head` and `tail` symlink.
   * The `head` symlink always points to the *oldest* file in the directory.
   * The `tail` symlink always points to the *newest* file in the directory.
-* Unlinking `head` unlinks the file pointed to by `head`.  Similarly, unlinking `tail` unlinks the file that `tail` points to.
-  * In both cases, the symlink is atomically re-pointed to the next-oldest or next-newest file, respectively.
+* Unlinking `head` does not remove the `head` symlink, but instead unlinks the file pointed to by `head`.  Similarly, unlinking `tail` unlinks the file that `tail` points to.
+  * `head` is atomically retargeted to the next-oldest file.
+  * `tail` is atomically retargeted to the next-newest file.
 * By default, each directory shares fate with the process that created it.  If the creator process dies, the directory and its contents cease to exist.
   * If the directory has the `user.eventfs_sticky` extended attribute set, the directory persists until explicitly removed.
 * There are no nested directories.
@@ -15,7 +16,7 @@ Eventfs is a specialized userspace filesystem where each directory serves as pro
 
 Sample Use-Cases
 ----------------
-The motivation behind eventfs is to provide an efficient but accessible userspace IPC system that is portable across multiple *nix.  It implements reliable message multicasting in a zero-copy manner, and offers access controls, quotas, shared channels, and readiness notification through familiar filesystem semantics.
+The motivation behind eventfs is to provide an efficient but accessible userspace IPC system that is portable across multiple *nix.  It implements reliable message multicasting while avoiding excessive copying, and offers access controls, quotas, channel-sharing, and readiness notification through familiar filesystem semantics.
 
 It is currently used to:
 * Give [libudev-compat](https://github.com/jcnelson/vdev) clients a way to receive device events while guaranteeing that they do not leave behind any residual state once they exit.
@@ -104,6 +105,6 @@ Running
 
 To run:
 
-        $ ./eventfs /path/to/mountpoint
+        $ ./eventfs [-c /path/to/config/file] /path/to/mountpoint
 
 It takes FUSE arguments like -f for "foreground", etc.  See `fuse(8).`
