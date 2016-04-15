@@ -999,6 +999,7 @@ int eventfs_stat( struct fskit_core* core, struct fskit_route_metadata* route_me
    int rc = 0;
    struct eventfs_state* eventfs = (struct eventfs_state*)fskit_core_get_user_data( core );
    struct eventfs_dir_inode* inode = NULL;
+   char* path = fskit_route_metadata_get_path( route_metadata );
    char* name = fskit_route_metadata_get_name( route_metadata );
 
    if( fent == NULL ) {
@@ -1040,7 +1041,7 @@ int eventfs_stat( struct fskit_core* core, struct fskit_route_metadata* route_me
        }
        
        // skip if sticky 
-       rc = fskit_fgetxattr( core, fent, "user.eventfs_sticky", NULL, 0 );
+       rc = fskit_fgetxattr( core, path, fent, "user.eventfs_sticky", NULL, 0 );
        if( rc >= 0 ) {
            
            // sticky set 
@@ -1195,6 +1196,7 @@ int eventfs_readdir( struct fskit_core* core, struct fskit_route_metadata* route
    struct fskit_entry* child = NULL;
    struct eventfs_dir_inode* inode = NULL;
    char* name = fskit_route_metadata_get_name( route_metadata );
+   char* path = fskit_route_metadata_get_path( route_metadata );
    
    struct eventfs_state* eventfs = (struct eventfs_state*)fskit_core_get_user_data( core );
    
@@ -1244,7 +1246,7 @@ int eventfs_readdir( struct fskit_core* core, struct fskit_route_metadata* route
       }
       
       // skip directories tagged with "user.eventfs_sticky"
-      rc = fskit_fgetxattr( core, child, "user.eventfs_sticky", NULL, 0 );
+      rc = fskit_fgetxattr( core, path, child, "user.eventfs_sticky", NULL, 0 );
       if( rc >= 0 ) {
           
           rc = 0;
