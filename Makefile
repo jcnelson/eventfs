@@ -8,8 +8,8 @@ DEFS  := -D_REENTRANT -D_THREAD_SAFE -D__STDC_FORMAT_MACROS -D_FILE_OFFSET_BITS=
 
 EVENTFS := eventfs
 
-DESTDIR ?= /
-PREFIX ?= /usr
+DESTDIR ?= 
+PREFIX ?= 
 BINDIR ?= $(DESTDIR)/$(PREFIX)/bin
 
 all: eventfs
